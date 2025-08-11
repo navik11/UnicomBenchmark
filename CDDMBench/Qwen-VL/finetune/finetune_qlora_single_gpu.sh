@@ -2,19 +2,19 @@
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 DIR=`pwd`
 
-MODEL="Qwen/Qwen-VL-Chat-Int4" # Qwen/Qwen-VL-Chat-Int4 Set the path if you do not want to load from huggingface directly
-# ATTENTION: specify the path to your training data, which should be a json file consisting of a list of conversations.
-# See the section for finetuning in README for more information.
+MODEL="Qwen/Qwen-VL-Chat-Int4"
+# Make sure this path is correct for your Kaggle environment
 DATA="../dataset/VQA/Crop_Disease_train_qwenvl.json"
 
 export CUDA_VISIBLE_DEVICES=0
 
-# Remember to use --fp16 instead of --bf16 due to autogptq
-python finetune.py \
+# LAUNCHER: Use 'deepspeed' not 'python'
+# FLAGS: All boolean flags are now just the flag name without 'True'
+deepspeed finetune.py \
     --model_name_or_path $MODEL \
     --data_path $DATA \
-    --fp16 True \
-    --fix_vit True \
+    --fp16 \
+    --fix_vit \
     --output_dir output_qwen \
     --num_train_epochs 5 \
     --per_device_train_batch_size 1 \
@@ -32,8 +32,7 @@ python finetune.py \
     --logging_steps 1 \
     --report_to "none" \
     --model_max_length 2048 \
-    --lazy_preprocess True \
+    --lazy_preprocess \
     --gradient_checkpointing \
     --use_lora \
-    --q_lora \
     --deepspeed finetune/ds_config_zero2.json

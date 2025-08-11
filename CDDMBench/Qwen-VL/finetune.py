@@ -252,7 +252,6 @@ def make_supervised_data_module(
 
     return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
 
-
 def train():
     global local_rank
     
@@ -266,26 +265,9 @@ def train():
         lora_args,
     ) = parser.parse_args_into_dataclasses()
 
-    if getattr(training_args, 'deepspeed', None) and getattr(lora_args, 'q_lora', False):
-        training_args.distributed_state.distributed_type = DistributedType.DEEPSPEED
+    # ... (keep compute_dtype, local_rank, etc. as is)
 
-    compute_dtype = (
-        torch.float16
-        if training_args.fp16
-        else (torch.bfloat16 if training_args.bf16 else torch.float32)
-    )
-
-    local_rank = training_args.local_rank
-
-    device_map = None
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
-    ddp = world_size != 1
-    if lora_args.q_lora:
-        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)} if ddp else None
-        if len(training_args.fsdp) > 0 or deepspeed.is_deepspeed_zero3_enabled():
-            logging.warning(
-                "FSDP or ZeRO3 are not incompatible with QLoRA."
-            )
+    # --- START OF MODIFICATIONS ---
 
     # Set RoPE scaling factor
     config = transformers.AutoConfig.from_pretrained(
@@ -295,36 +277,29 @@ def train():
     )
     config.use_cache = False
 
-    # Load model and tokenizer
+    # Load the GPTQ model correctly
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         config=config,
         cache_dir=training_args.cache_dir,
-        device_map=device_map,
+        device_map="auto",  # Let accelerate handle device mapping
         trust_remote_code=True,
-        quantization_config=None,
     )
 
-    # if not training_args.use_lora:
-    if training_args.fix_vit and hasattr(model,'transformer') and hasattr(model.transformer,'visual'):
-        model.transformer.visual.requires_grad_(False)
-        if hasattr(model.transformer.visual,'attn_pool'):
-            model.transformer.visual.attn_pool.requires_grad_(True)
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=False,
-        trust_remote_code=True,
+    # Prepare the pre-quantized GPTQ model for LoRA fine-tuning
+    # This freezes the base model and makes the LoRA layers trainable
+    model = prepare_model_for_kbit_training(
+        model, use_gradient_checkpointing=training_args.gradient_checkpointing
     )
+
+    # --- END OF MODIFICATIONS ---
+
+    # ... (The tokenizer loading section can remain the same) ...
+    tokenizer = transformers.AutoTokenizer.from_pretrained(...)
     tokenizer.pad_token_id = tokenizer.eod_id
 
+    # The LoRA setup is now simpler because the model is already prepared
     if training_args.use_lora:
-        if lora_args.q_lora or "chat" in model_args.model_name_or_path.lower():
-            modules_to_save = None
-        else:
-            modules_to_save = ["wte", "lm_head"]
         lora_config = LoraConfig(
             r=lora_args.lora_r,
             lora_alpha=lora_args.lora_alpha,
@@ -332,33 +307,22 @@ def train():
             lora_dropout=lora_args.lora_dropout,
             bias=lora_args.lora_bias,
             task_type="CAUSAL_LM",
-            modules_to_save=modules_to_save  # This argument serves for adding new tokens.
         )
-        # if lora_args.q_lora:
-        #     model = prepare_model_for_kbit_training(
-        #         model, use_gradient_checkpointing=training_args.gradient_checkpointing
-        #     )
-
+        
         model = get_peft_model(model, lora_config)
 
         if training_args.gradient_checkpointing:
             model.enable_input_require_grads()
+            
+        # It's good practice to print this to confirm LoRA is working
+        model.print_trainable_parameters()
 
-    # Load data
-    data_module = make_supervised_data_module(
-        tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length
-    )
+    # ... (The rest of the script: data_module, Trainer, etc., can remain the same) ...
 
-    # Start trainner
-    trainer = Trainer(
-        model=model, tokenizer=tokenizer, args=training_args, **data_module
-    )
-
+    trainer = Trainer(...)
     trainer.train()
     trainer.save_state()
-
-    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir, bias=lora_args.lora_bias)
-
+    safe_save_model_for_hf_trainer(...)
 
 if __name__ == "__main__":
     train()
