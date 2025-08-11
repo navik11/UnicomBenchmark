@@ -47,7 +47,7 @@ class TrainingArguments(transformers.TrainingArguments):
         },
     )
     use_lora: bool = False
-    fix_vit: bool = True
+    fix_vit: bool = False
 
 
 @dataclass
