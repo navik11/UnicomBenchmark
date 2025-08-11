@@ -1,8 +1,8 @@
-transformers==4.32.0
+transformers
 accelerate
 tiktoken
 einops
-transformers_stream_generator==0.0.4
+transformers_stream_generator
 scipy
 torchvision
 pillow
