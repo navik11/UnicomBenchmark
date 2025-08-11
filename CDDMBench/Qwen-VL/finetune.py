@@ -296,41 +296,72 @@ def train():
     
     device_map = "auto" if lora_args.q_lora else None
     
-    config = transformers.AutoConfig.from_pretrained(...)
+    config = transformers.AutoConfig.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        trust_remote_code=True,
+    )
     config.use_cache = False
 
-    # 3. Load the model with the (optional) quantization config
+    # Load model and tokenizer
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         config=config,
         cache_dir=training_args.cache_dir,
         device_map=device_map,
         trust_remote_code=True,
-        quantization_config=quantization_config, # APPLY THE CONFIG HERE
+        quantization_config=None,
     )
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(...)
+    # if not training_args.use_lora:
+    if training_args.fix_vit and hasattr(model,'transformer') and hasattr(model.transformer,'visual'):
+        model.transformer.visual.requires_grad_(False)
+        if hasattr(model.transformer.visual,'attn_pool'):
+            model.transformer.visual.attn_pool.requires_grad_(True)
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=False,
+        trust_remote_code=True,
+    )
     tokenizer.pad_token_id = tokenizer.eod_id
 
-    # This logic is now correct. It will only be used if use_lora is True.
     if training_args.use_lora:
-        # Prepare the model for k-bit training if QLoRA is active
-        if lora_args.q_lora:
-            model = prepare_model_for_kbit_training(
-                model, use_gradient_checkpointing=training_args.gradient_checkpointing
-            )
-        
-        lora_config = LoraConfig(...)
-        
+        if lora_args.q_lora or "chat" in model_args.model_name_or_path.lower():
+            modules_to_save = None
+        else:
+            modules_to_save = ["wte", "lm_head"]
+        lora_config = LoraConfig(
+            r=lora_args.lora_r,
+            lora_alpha=lora_args.lora_alpha,
+            target_modules=lora_args.lora_target_modules,
+            lora_dropout=lora_args.lora_dropout,
+            bias=lora_args.lora_bias,
+            task_type="CAUSAL_LM",
+            modules_to_save=modules_to_save  # This argument serves for adding new tokens.
+        )
+        # if lora_args.q_lora:
+        #     model = prepare_model_for_kbit_training(
+        #         model, use_gradient_checkpointing=training_args.gradient_checkpointing
+        #     )
+
         model = get_peft_model(model, lora_config)
 
         if training_args.gradient_checkpointing:
             model.enable_input_require_grads()
-            
-        model.print_trainable_parameters()
-    # ... (The rest of the script: data_module, Trainer, etc., can remain the same) ...
 
-    trainer = Trainer(...)
+    # Load data
+    data_module = make_supervised_data_module(
+        tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length
+    )
+
+    # Start trainner
+    trainer = Trainer(
+        model=model, tokenizer=tokenizer, args=training_args, **data_module
+    )
+
     trainer.train()
     trainer.save_state()
     safe_save_model_for_hf_trainer(...)
