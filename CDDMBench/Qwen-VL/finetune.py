@@ -263,7 +263,7 @@ def train():
         data_args,
         training_args,
         lora_args,
-    ) = parser.parse_args_into_dataclasses()
+    ), remaining = parser.parse_args_into_dataclasses(return_remaining_strings=True)[0]
 
     # ... (keep compute_dtype, local_rank, etc. as is)
 
