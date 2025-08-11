@@ -301,6 +301,7 @@ def train():
         cache_dir=training_args.cache_dir,
         device_map=device_map,
         trust_remote_code=True,
+        torch_dtype=compute_dtype,
         quantization_config=None,
     )
 
