@@ -1,6 +1,4 @@
 # This code is based on the revised code from fastchat based on tatsu-lab/stanford_alpaca.
-
-
 from dataclasses import dataclass, field
 import json
 import math
@@ -17,6 +15,7 @@ from transformers.integrations import deepspeed
 from transformers.trainer_pt_utils import LabelSmoother
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from accelerate.utils import DistributedType
+from transformers import BitsAndBytesConfig
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
@@ -265,15 +264,26 @@ def train():
         lora_args,
     ) = parser.parse_args_into_dataclasses()
 
-    # ... (keep compute_dtype, local_rank, etc. as is)
+    # --- START OF FIX ---
+    
+    # 1. DEFINE compute_dtype FIRST, based on the training_args
+    compute_dtype = (
+        torch.float16
+        if training_args.fp16
+        else (torch.bfloat16 if training_args.bf16 else torch.float32)
+    )
 
-    # --- START OF QLoRA MODIFICATIONS ---
+    # 2. NOW you can safely use it to create the quantization config
+    quantization_config = None
+    if lora_args.q_lora:
+        rank0_print("QLoRA enabled. Creating 4-bit quantization config...")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=compute_dtype # This will now work perfectly
+        )
 
-    # 1. Import BitsAndBytesConfig
-    from transformers import BitsAndBytesConfig
-
-    # 2. Define the Quantization Configuration for 4-bit loading
-    #    This will only be created if you use the --q_lora flag
     quantization_config = None
     if lora_args.q_lora:
         rank0_print("QLoRA enabled. Creating 4-bit quantization config...")
@@ -285,8 +295,7 @@ def train():
         )
     
     device_map = "auto" if lora_args.q_lora else None
-
-    # Set RoPE scaling factor
+    
     config = transformers.AutoConfig.from_pretrained(...)
     config.use_cache = False
 
@@ -299,8 +308,6 @@ def train():
         trust_remote_code=True,
         quantization_config=quantization_config, # APPLY THE CONFIG HERE
     )
-    
-    # --- END OF QLoRA MODIFICATIONS ---
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(...)
     tokenizer.pad_token_id = tokenizer.eod_id
