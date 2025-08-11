@@ -48,7 +48,7 @@ class TrainingArguments(transformers.TrainingArguments):
         },
     )
     use_lora: bool = False
-    fix_vit: bool = True
+    fix_vit: bool = False
 
 
 @dataclass
@@ -267,56 +267,60 @@ def train():
 
     # ... (keep compute_dtype, local_rank, etc. as is)
 
-    # --- START OF MODIFICATIONS ---
+    # --- START OF QLoRA MODIFICATIONS ---
+
+    # 1. Import BitsAndBytesConfig
+    from transformers import BitsAndBytesConfig
+
+    # 2. Define the Quantization Configuration for 4-bit loading
+    #    This will only be created if you use the --q_lora flag
+    quantization_config = None
+    if lora_args.q_lora:
+        rank0_print("QLoRA enabled. Creating 4-bit quantization config...")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=compute_dtype
+        )
+    
+    device_map = "auto" if lora_args.q_lora else None
 
     # Set RoPE scaling factor
-    config = transformers.AutoConfig.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        trust_remote_code=True,
-    )
+    config = transformers.AutoConfig.from_pretrained(...)
     config.use_cache = False
 
-    # Load the GPTQ model correctly
+    # 3. Load the model with the (optional) quantization config
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
         config=config,
         cache_dir=training_args.cache_dir,
-        device_map="auto",  # Let accelerate handle device mapping
+        device_map=device_map,
         trust_remote_code=True,
+        quantization_config=quantization_config, # APPLY THE CONFIG HERE
     )
+    
+    # --- END OF QLoRA MODIFICATIONS ---
 
-    # Prepare the pre-quantized GPTQ model for LoRA fine-tuning
-    # This freezes the base model and makes the LoRA layers trainable
-    model = prepare_model_for_kbit_training(
-        model, use_gradient_checkpointing=training_args.gradient_checkpointing
-    )
-
-    # --- END OF MODIFICATIONS ---
-
-    # ... (The tokenizer loading section can remain the same) ...
     tokenizer = transformers.AutoTokenizer.from_pretrained(...)
     tokenizer.pad_token_id = tokenizer.eod_id
 
-    # The LoRA setup is now simpler because the model is already prepared
+    # This logic is now correct. It will only be used if use_lora is True.
     if training_args.use_lora:
-        lora_config = LoraConfig(
-            r=lora_args.lora_r,
-            lora_alpha=lora_args.lora_alpha,
-            target_modules=lora_args.lora_target_modules,
-            lora_dropout=lora_args.lora_dropout,
-            bias=lora_args.lora_bias,
-            task_type="CAUSAL_LM",
-        )
+        # Prepare the model for k-bit training if QLoRA is active
+        if lora_args.q_lora:
+            model = prepare_model_for_kbit_training(
+                model, use_gradient_checkpointing=training_args.gradient_checkpointing
+            )
+        
+        lora_config = LoraConfig(...)
         
         model = get_peft_model(model, lora_config)
 
         if training_args.gradient_checkpointing:
             model.enable_input_require_grads()
             
-        # It's good practice to print this to confirm LoRA is working
         model.print_trainable_parameters()
-
     # ... (The rest of the script: data_module, Trainer, etc., can remain the same) ...
 
     trainer = Trainer(...)
